@@ -1,0 +1,333 @@
+
+Follow  links For acceing pods outside the cluster.
+
+http://alesnosek.com/blog/2017/02/14/accessing-kubernetes-pods-from-outside-of-the-cluster/
+
+
+Follow above link to  setup kubernetes cluster in two node cluster 
+
+https://www.assistanz.com/steps-to-install-kubernetes-cluster-manually-using-centos-7/
+
+If  you want to configure kubernetes cluster using ansible playbook Follow below steps 
+
+step 1> Install  ansible in master node firewall should be enable in all nodes 
+
+step 2> 
+       mkdir /Kubernetes 
+       cd  /Kubernetes
+       ls
+       total 20
+       -rw-r--r--. 1 root root  170 Feb 22 07:46 hosts
+       -rw-r--r--. 1 root root  837 Feb 22 07:57 master.yml
+       -rw-r--r--. 1 root root  168 Feb 22 09:48 pod.yml
+       -rw-r--r--. 1 root root 1858 Feb 22 08:00 prep.yml
+       -rw-r--r--. 1 root root  503 Feb 22 07:59 worker.yml
+
+File contents are 
+
+# cat  hosts
+[kubernetes-master-nodes]
+K8S-master ansible_host=192.168.1.226
+
+[kubernetes-worker-nodes]
+K8S-worker1 ansible_host=192.168.1.218
+K8S-worker2 ansible_host=192.168.1.193
+
+Check all node reachable or not 
+
+[root@k8s-master Kubernetes]# ansible all  -i hosts -m  ping
+K8S-master | SUCCESS => {
+    "changed": false,
+    "ping": "pong"
+}
+K8S-worker1 | SUCCESS => {
+    "changed": false,
+    "ping": "pong"
+}
+K8S-worker2 | SUCCESS => {
+    "changed": false,
+    "ping": "pong"
+}
+
+Steps-3 > Requirementes yaml file
+
+ [root@k8s-master Kubernetes]# cat  prep.yml
+---
+- hosts: all
+  tasks:
+  - name: Disabling Swap on all nodes
+    shell: swapoff -a
+
+  - name: Commenting Swap entries in /etc/fstab
+    replace:
+     path: /etc/fstab
+     regexp: '(.*swap*)'
+     replace: '#\1'
+
+  - name: Disabling selinux or permissive
+    command: setenforce 0
+
+  - name: disable SELinux
+    command: setenforce 0
+
+  - name: disable SELinux on reboot
+    selinux:
+     state: disabled
+
+
+  - name: ensure net.bridge.bridge-nf-call-iptables is set to 1
+    command: echo '1' > /proc/sys/net/bridge/bridge-nf-call-iptables
+
+  - name: add Kubernetes' YUM repository
+    yum_repository:
+     name: Kubernetes
+     description: Kubernetes YUM repository
+     baseurl: https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64
+     gpgkey: https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+     gpgcheck: yes
+
+  - name: Installing docker
+    yum: name=docker state=present
+
+  - name: starting docker service
+    service: name=docker state=started  enabled=yes
+
+  - name: installing kubeadm
+    yum: name=kubeadm state=present
+  - name: installing kubelet
+    yum: name=kubelet  state=present
+
+  - name: starting kubelet service
+    service: name=kubelet enabled=yes state=started
+
+  - name: Enabling firewalld ports
+    firewalld:
+     port: 10250-10252/tcp
+     permanent: yes
+     immediate: yes
+     state: enabled
+  - name: Enabling firewalld ports 6443
+    firewalld:
+     port: 6443/tcp
+     permanent: yes
+     immediate: yes
+     state: enabled
+
+  - name: Enabling firewalld ports 2379
+    firewalld:
+     port: 2379-2380/tcp
+     permanent: yes
+     immediate: yes
+     state: enabled
+- hosts: K8S-master
+  tasks:
+  - name: install kubectl
+    yum:
+     name: kubectl
+     state: present
+
+
+# ansible-playbook -i hosts prep.yml 
+
+step-4 > Run master yaml file 
+
+   [root@k8s-master Kubernetes]# cat  master.yml
+---
+- hosts: K8S-master
+  become: yes
+  tasks:
+    - name: initialize the cluster
+      shell: kubeadm init --apiserver-advertise-address=192.168.1.226 --pod-network-cidr=10.244.0.0/16 >> cluster_initialized.txt
+      args:
+        chdir: $HOME
+        creates: cluster_initialized.txt
+
+    - name: create .kube directory
+      file:
+        path: $HOME/.kube
+        state: directory
+        mode: 0755
+
+    - name: copy admin.conf to user's kube config
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: $HOME/.kube/config
+        remote_src: yes
+        owner: root
+
+    - name: install Pod network
+
+      shell: kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml >> pod_network_setup.txt
+      args:
+        chdir: $HOME
+        creates: pod_network_setup.txt
+
+[root@k8s-master Kubernetes]#ansible-playbook -i hosts master.yml 
+
+step-5 > Run worker yaml file 
+
+[root@k8s-master Kubernetes]# cat worker.yml
+- hosts: K8S-master
+  gather_facts: false
+  tasks:
+    - name: get join command
+      shell: kubeadm token create --print-join-command
+      register: join_command_raw
+
+    - name: set join command
+      set_fact:
+        join_command: "{{ join_command_raw.stdout_lines[0] }}"
+
+
+- hosts: kubernetes-worker-nodes
+  become: yes
+  tasks:
+    - name: join cluster
+      shell: "{{ hostvars['K8S-master'].join_command }} >> node_joined.txt"
+      args:
+        chdir: $HOME
+        creates: node_joined.txt
+
+[root@k8s-master Kubernetes] # ansible-playbook -i hosts worker.yml 
+
+Wait some to configure entire kubernetes cluster 
+To verify if done or not 
+
+#kubectl get nodes 
+
+# kubectl get  pods --all-namespaces 
+
+
+
+
+
+
+
+
+
+ 
+
+
+
+
+Viewing namespaces
+
+List the current namespaces in a cluster using:
+
+$ kubectl get namespaces
+NAME          STATUS    AGE
+default       Active    11d
+kube-system   Active    11d
+kube-public   Active    11d
+Kubernetes starts with three initial namespaces:
+
+default :The default namespace for objects with no other namespace
+
+kube-system : The namespace for objects created by the Kubernetes system
+
+kube-public: This namespace is created automatically and is readable by all users (including those not authenticated). This namespace is mostly reserved for cluster usage, in case that some resources should be visible and readable publicly throughout the whole cluster. The public aspect of this namespace is only a convention, not a requirement.
+
+
+You can also get the summary of a specific namespace using:
+
+$ kubectl get namespaces <name>
+
+Or you can get detailed information with:
+
+$ kubectl describe namespaces <name>
+Name:           default
+Labels:         <none>
+Annotations:    <none>
+Status:         Active
+
+No resource quota.
+
+Resource Limits
+ Type       Resource    Min Max Default
+ ----               --------    --- --- ---
+ Container          cpu         -   -   100m
+Note that these details show both resource quota (if present) as well as resource limit ranges.
+
+Resource quota tracks aggregate usage of resources in the Namespace and allows cluster operators to define Hard resource usage limits that a Namespace may consume.
+
+A limit range defines min/max constraints on the amount of resources a single entity can consume in a Namespace.
+
+See Admission control: Limit Range
+
+A namespace can be in one of two phases:
+
+Active the namespace is in use
+
+Terminating the namespace is being deleted, and can not be used for new objects.
+
+#######################################################
+
+To  check all namespaces 
+
+#kubectl get namespaces
+
+To create a new namespace
+
+# kubectl create namespace <namespace name>
+
+ex: 
+
+# kubectl create namespace my-namespace 
+
+Creating namespace through yaml 
+
+[root@k8s-master Kubernetes]# cat  NM.yml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: my-namespace1
+
+ 
+#kubectl  apply  -f NM.yml
+
+To delete a namespace 
+
+[root@k8s-master Kubernetes]# kubectl  delete  namespace my-namespace1
+namespace "my-namespace1" deleted
+[root@k8s-master Kubernetes]#
+
+To verify 
+
+# kubectl get namespaces 
+
+The operations team would like to maintain a space in the cluster where they can enforce strict procedures on who can or cannot manipulate the set of Pods, Services, and Deployments that run the production site.
+
+One pattern this organization could follow is to partition the Kubernetes cluster into two namespaces: development and production.
+
+[root@k8s-master Kubernetes]# cat  kubernetes-dev.json
+{
+  "kind": "Namespace",
+  "apiVersion": "v1",
+  "metadata": {
+    "name": "development",
+    "labels": {
+      "name": "development"
+    }
+  }
+}
+
+#kubectl create -f kubernetes-dev.json
+
+Another one
+
+[root@k8s-master Kubernetes]# cat  kubernetes-prod.json
+{
+  "kind": "Namespace",
+  "apiVersion": "v1",
+  "metadata": {
+    "name": "production",
+    "labels": {
+      "name": "production"
+    }
+  }
+}
+
+To create the namespace 
+
+#kubectl create -f kubernetes-prod.json
+
